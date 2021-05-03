@@ -8,6 +8,7 @@ import {
   ImageBackground,
   Image,
   Alert,
+  KeyboardAvoidingView,
 } from "react-native";
 import * as Permissions from "expo-permissions";
 import { BarCodeScanner } from "expo-barcode-scanner";
@@ -32,9 +33,6 @@ export default class TransactionScreen extends Component {
     const { status } = await Permissions.askAsync(Permissions.CAMERA);
 
     this.setState({
-      /*status === "granted" is true when user has granted permission
-          status === "granted" is false when user has not granted the permission
-        */
       hasCameraPermissions: status === "granted",
       domState: domState,
       scanned: false,
@@ -58,19 +56,40 @@ export default class TransactionScreen extends Component {
       });
     }
   };
-  handleTransaction = () => {
-    db.collection("books")
-      .doc(this.state.bookId)
-      .get()
-      .then((doc) => {
-        var book = doc.data();
-        console.log(book);
-        if (book.bookavailability) {
-          this.initiatebookissue();
-        } else {
-          this.initiatebookreturn();
-        }
+  handleTransaction = async () => {
+    var transactiontype = await this.checkbookelegibility();
+    console.log(transactiontype);
+    if (!transactiontype) {
+      Alert.alert("The Book does not exist. Please try contacting the owner");
+      this.setState({
+        bookId: "",
+        studentId: "",
       });
+    } else if (transactiontype === "issue") {
+      var isstudenteligible = await this.checkstudenteligibilityforissue();
+      if (isstudenteligible) {
+        this.initiatebookissue();
+        Alert.alert("Book Issued to Student");
+      }
+    } else {
+      var isstudenteligible = await this.checkstudenteligibilityforreturn();
+      if (isstudenteligible) {
+        this.initiatebookreturn();
+        Alert.alert("Book issued to Library");
+      }
+    }
+    // db.collection("books")
+    //   .doc(this.state.bookId)
+    //   .get()
+    //   .then((doc) => {
+    //     var book = doc.data();
+    //     console.log(book.bookavailability);
+    //     if (book.bookavailability) {
+    //       this.initiatebookissue();
+    //     } else {
+    //       this.initiatebookreturn();
+    //     }
+    //   });
   };
   initiatebookissue = async () => {
     db.collection("transactions").add({
@@ -79,7 +98,7 @@ export default class TransactionScreen extends Component {
       transactiontype: "issue",
       date: firebase.firestore.Timestamp.now().toDate(),
     });
-    db.collections("books").doc(this.state.bookId).update({
+    db.collection("books").doc(this.state.bookId).update({
       bookavailability: false,
     });
     db.collection("students")
@@ -88,6 +107,87 @@ export default class TransactionScreen extends Component {
         bookstaken: firebase.firestore.FieldValue.increment(1),
       });
     Alert.alert("book successfully issued");
+  };
+  initiatebookreturn = async () => {
+    db.collection("transactions").add({
+      studentId: this.state.studentId,
+      bookId: this.state.bookId,
+      transactiontype: "return",
+      date: firebase.firestore.Timestamp.now().toDate(),
+    });
+    db.collection("books").doc(this.state.bookId).update({
+      bookavailability: true,
+    });
+    db.collection("students")
+      .doc(this.state.studentId)
+      .update({
+        bookstaken: firebase.firestore.FieldValue.increment(-1),
+      });
+    Alert.alert("book successfully returned");
+  };
+  checkbookelegibility = async () => {
+    const bookref = await db
+      .collection("books")
+      .where("bookId", "==", this.state.bookId)
+      .get();
+    var transactiontype = "";
+    if (bookref.docs.length == 0) {
+      this.setState({
+        bookId: "",
+        studentId: "",
+      });
+      transactiontype = false;
+      Alert.alert("Book Not Found");
+    } else {
+      bookref.docs.map((doc) => {
+        var book = doc.data();
+        if (book.bookavailability) {
+          transactiontype = "issue";
+        } else {
+          transactiontype = "return";
+        }
+      });
+    }
+  };
+  checkstudenteligibilityforissue = async () => {
+    const studentref = await db
+      .collection("students")
+      .where("studentId", "==", this.state.studentId)
+      .get();
+    var isstudenteligible = "";
+    if (studentref.docs.length == 0) {
+      isstudenteligible = "false";
+      Alert.alert("Student Does not Exist");
+    } else {
+      studentref.docs.map((doc) => {
+        var student = doc.data();
+        if (student.bookstaken < 2) {
+          isstudenteligible = true;
+        } else {
+          isstudenteligible = false;
+          Alert.alert("Student has reached the limit for books issued");
+        }
+      });
+    }
+    return isstudenteligible;
+  };
+  checkstudenteligibilityforreturn = async () => {
+    const transactionref = await db
+      .collection("transactions")
+      .where("bookId", "==", this.state.bookId)
+      .limit(1)
+      .get();
+    var isstudenteligible = "";
+    transactionref.docs.map((doc) => {
+      var lastbooktransaction = doc.data();
+      if (lastbooktransaction.studentId === this.state.studentId) {
+        isstudenteligible = true;
+      } else {
+        isstudenteligible = false;
+        Alert(" This boook is not issued by this student");
+      }
+    });
+    return isstudenteligible;
   };
   render() {
     const { bookId, studentId, domState, scanned } = this.state;
@@ -100,58 +200,67 @@ export default class TransactionScreen extends Component {
       );
     }
     return (
-      <View style={styles.container}>
-        <ImageBackground source={bgImage} style={styles.bgImage}>
-          <View style={styles.upperContainer}>
-            <Image source={appIcon} style={styles.appIcon} />
-            <Image source={appName} style={styles.appName} />
-          </View>
-          <View style={styles.lowerContainer}>
-            <View style={styles.textinputContainer}>
-              <TextInput
-                style={styles.textinput}
-                placeholder={"Book Id"}
-                placeholderTextColor={"#FFFFFF"}
-                value={bookId}
-              />
-              <TouchableOpacity
-                style={styles.scanbutton}
-                onPress={() => this.getCameraPermissions("bookId")}
-              >
-                <Text style={styles.scanbuttonText}>Scan</Text>
-              </TouchableOpacity>
+      <KeyboardAvoidingView style={styles.container} behavior="padding" enabled>
+        <View style={styles.container}>
+          <ImageBackground source={bgImage} style={styles.bgImage}>
+            <View style={styles.upperContainer}>
+              <Image source={appIcon} style={styles.appIcon} />
+              <Image source={appName} style={styles.appName} />
             </View>
-            <View style={[styles.textinputContainer, { marginTop: 25 }]}>
-              <TextInput
-                style={styles.textinput}
-                placeholder={"Student Id"}
-                placeholderTextColor={"#FFFFFF"}
-                value={studentId}
-              />
-              <TouchableOpacity
-                style={styles.scanbutton}
-                onPress={() => this.getCameraPermissions("studentId")}
-              >
-                <Text style={styles.scanbuttonText}>Scan</Text>
-              </TouchableOpacity>
+            <View style={styles.lowerContainer}>
+              <View style={styles.textinputContainer}>
+                <TextInput
+                  style={styles.textinput}
+                  placeholder={"Book Id"}
+                  placeholderTextColor={"#FFFFFF"}
+                  value={bookId}
+                  onChangeText={(text) => {
+                    this.setState({ bookId: text });
+                  }}
+                />
+                <TouchableOpacity
+                  style={styles.scanbutton}
+                  onPress={() => this.getCameraPermissions("bookId")}
+                >
+                  <Text style={styles.scanbuttonText}>Scan</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={[styles.textinputContainer, { marginTop: 25 }]}>
+                <TextInput
+                  style={styles.textinput}
+                  placeholder={"Student Id"}
+                  placeholderTextColor={"#FFFFFF"}
+                  value={studentId}
+                  onChangeText={(text) => {
+                    this.setState({ studentId: text });
+                  }}
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={styles.scanbutton}
+                  onPress={() => this.getCameraPermissions("studentId")}
+                >
+                  <Text style={styles.scanbuttonText}>Scan</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-          <TouchableOpacity
-            style={{
-              width: 100,
-              height: 30,
-              backgroundColor: "aqua",
-              justifyContent: "center",
-              alignContent: "center",
-              alignItems: "center",
-              alignSelf: "center",
-            }}
-            onPress={this.handleTransaction}
-          >
-            <Text>Submit</Text>
-          </TouchableOpacity>
-        </ImageBackground>
-      </View>
+            <TouchableOpacity
+              style={{
+                width: 100,
+                height: 30,
+                backgroundColor: "aqua",
+                justifyContent: "center",
+                alignContent: "center",
+                alignItems: "center",
+                alignSelf: "center",
+              }}
+              onPress={this.handleTransaction}
+            >
+              <Text>Submit</Text>
+            </TouchableOpacity>
+          </ImageBackground>
+        </View>
+      </KeyboardAvoidingView>
     );
   }
 }
